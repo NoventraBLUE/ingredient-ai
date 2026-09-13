@@ -33,7 +33,7 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 app = FastAPI(title="Ingredient AI - Vercel Edition")
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
-# 2. Secret Management (Loaded strictly from Environment Variables)
+# 2. Secret Management
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 JWT_SECRET = os.environ.get("JWT_SECRET", secrets.token_hex(32))
 CSRF_SECRET = os.environ.get("CSRF_SECRET", secrets.token_hex(32))
@@ -123,26 +123,30 @@ def extract_thumbnail_from_link(url: str) -> str:
 def extract_link_metadata(url: str) -> str:
     yt_match = re.search(r'(?:v=|youtu\.be\/|shorts\/)([a-zA-Z0-9_-]{11})', url)
     if yt_match:
+        vid_id = yt_match.group(1)
+        standard_url = f"https://www.youtube.com/watch?v={vid_id}"
         try:
-            oembed_url = f"https://www.youtube.com/oembed?url={urllib.parse.quote(url)}&format=json"
+            oembed_url = f"https://www.youtube.com/oembed?url={urllib.parse.quote(standard_url)}&format=json"
             req = urllib.request.Request(oembed_url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=3) as resp:
+            with urllib.request.urlopen(req, timeout=4) as resp:
                 data = json.loads(resp.read().decode())
-                return f"YouTube Title: {data.get('title', '')}"
+                return f"YouTube Video Title: {data.get('title', '')} (Creator: {data.get('author_name', '')})"
         except Exception:
             pass
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=3) as resp:
-            html = resp.read()[:20000].decode("utf-8", errors="ignore")
+            html = resp.read()[:25000].decode("utf-8", errors="ignore")
             parser = LinkMetaParser()
             parser.feed(html)
-            return f"Page Title: {parser.title}\nDescription: {parser.description}"
+            return f"Page Title: {parser.title} | Description: {parser.description}"
     except Exception:
         return f"Link: {url}"
 
 def get_dish_photo(dish_name: str) -> str:
     d = dish_name.lower()
+    if any(k in d for k in ["garlic bread", "bread", "toast"]):
+        return "https://images.unsplash.com/photo-1573140247632-f8fd74997d5c?w=800"
     if any(k in d for k in ["karahi", "kadai", "handi"]):
         return "https://images.unsplash.com/photo-1603894584373-5ac82b2ae398?w=800"
     if any(k in d for k in ["curry", "salan", "korma", "gravy", "masala"]):
@@ -153,9 +157,11 @@ def get_dish_photo(dish_name: str) -> str:
         return "https://images.unsplash.com/photo-1565299585323-38d6b0865b47?w=800"
     if any(k in d for k in ["ramen", "noodle"]):
         return "https://images.unsplash.com/photo-1569718212165-3a8278d5f624?w=800"
-    if any(k in d for k in ["pasta", "pizza"]):
+    if any(k in d for k in ["pasta", "fettuccine", "spaghetti"]):
         return "https://images.unsplash.com/photo-1621996346565-e3d5d6281290?w=800"
-    return "https://images.unsplash.com/photo-1588166524941-3bf61a9c41db?w=800"
+    if "pizza" in d:
+        return "https://images.unsplash.com/photo-1513104890138-7c749659a591?w=800"
+    return "https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=800"
 
 # 5. Security: Rate Limiter, CSRF & Magic Bytes
 class SlidingWindowRateLimiter:
@@ -426,16 +432,26 @@ async def analyze_dish(
         with open(saved_file_path, "rb") as f:
             contents.append(types.Part.from_bytes(data=f.read(), mime_type=media_file.content_type or "image/jpeg"))
 
+    # HERE: Now passing the real extracted video title directly into the AI prompt!
     prompt = f"""
     You are Ingredient AI, an expert visual culinary recognition system.
-    AUTOMATICALLY IDENTIFY the exact dish:
-    1. Exact dish title (recognize Desi/Pakistani, Italian, Mexican, Asian; never guess French duck breast unless visible).
-    2. Regional Cuisine.
-    3. Calorie Range: min_calories and max_calories.
+    
+    SOURCE INFORMATION:
+    Video/Recipe Link Provided: {clean_url or 'None'}
+    Extracted Video Title & Details:
+    {link_context or 'No link metadata.'}
+
+    STRICT EXTRACTION INSTRUCTIONS:
+    1. Identify the EXACT dish mentioned in the title/metadata above:
+       - If the video is about Garlic Bread, you MUST extract Garlic Bread (bread, cheese, butter, garlic)!
+       - If the video is about Brownies or Cake, extract that exact dessert!
+       - If the video is about Chicken Karahi or Biryani, extract that!
+       - STRICT RULE: Do NOT default to Chicken Karahi unless the video title or video actually shows Chicken Karahi!
+    2. Regional Cuisine (e.g. Italian, American, Pakistani, Mexican).
+    3. Calorie Range: realistic min_calories and max_calories for a standard serving.
     4. Total macros: protein_g, carbs_g, fat_g.
-    5. Ingredients with realistic amounts and calories.
+    5. Detailed ingredients matching that specific dish with realistic quantities and calories.
     6. 3-4 cooking steps.
-    Link context: {clean_url or 'None'}
     """
     contents.append(prompt)
 
