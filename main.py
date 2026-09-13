@@ -22,33 +22,26 @@ from html.parser import HTMLParser
 from google import genai
 from google.genai import types
 
-app = FastAPI(title="Ingredient AI - Dynamic Photo Engine")
+# 1. Cloud & Vercel Detection
+IS_VERCEL = bool(os.environ.get("VERCEL"))
+BASE_DIR = "/tmp" if IS_VERCEL else "."
+UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
+DB_PATH = os.path.join(BASE_DIR, "ingredient_ai.db")
 
-# 1. Environment & Secret Management
-def load_env_file():
-    env_path = ".env"
-    if not os.path.exists(env_path):
-        with open(env_path, "w", encoding="utf-8") as f:
-            f.write('GEMINI_API_KEY="AQ.Ab8RN6KkkMaggtjm-BUF1IV_-G657uC1OdDFBbtRMDu075b0pA"\n')
-            f.write(f'JWT_SECRET="{secrets.token_hex(32)}"\n')
-            f.write(f'CSRF_SECRET="{secrets.token_hex(32)}"\n')
-    
-    with open(env_path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                key, val = line.split("=", 1)
-                os.environ.setdefault(key.strip(), val.strip().strip('"').strip("'"))
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-load_env_file()
+app = FastAPI(title="Ingredient AI - Vercel Edition")
+app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+
+# 2. Secret Management (Loaded strictly from Environment Variables)
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 JWT_SECRET = os.environ.get("JWT_SECRET", secrets.token_hex(32))
 CSRF_SECRET = os.environ.get("CSRF_SECRET", secrets.token_hex(32))
 
-client = genai.Client(api_key=GEMINI_KEY)
+client = genai.Client(api_key=GEMINI_KEY) if GEMINI_KEY else None
 MODELS_TO_TRY = ["gemini-3.6-flash", "gemini-2.5-flash"]
 
-# 2. Production Security Middleware (Force HTTPS & HSTS)
+# 3. Security Headers Middleware (Force HTTPS in production)
 class ProductionSecurityMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         forwarded_proto = request.headers.get("x-forwarded-proto")
@@ -77,7 +70,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 3. Dynamic Link Thumbnail & Metadata Extractor
+# 4. Link Thumbnail & Metadata Extractor
 class LinkMetaParser(HTMLParser):
     def __init__(self):
         super().__init__()
@@ -111,15 +104,12 @@ class LinkMetaParser(HTMLParser):
             self.in_title = False
 
 def extract_thumbnail_from_link(url: str) -> str:
-    # 1. YouTube Shorts or Video (extracts high quality video thumbnail)
     yt_match = re.search(r'(?:v=|youtu\.be\/|shorts\/)([a-zA-Z0-9_-]{11})', url)
     if yt_match:
         vid_id = yt_match.group(1)
         return f"https://img.youtube.com/vi/{vid_id}/hqdefault.jpg"
-
-    # 2. Recipe Blogs / Web pages (extracts OpenGraph og:image)
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=3) as resp:
             html = resp.read()[:25000].decode("utf-8", errors="ignore")
             parser = LinkMetaParser()
@@ -151,57 +141,23 @@ def extract_link_metadata(url: str) -> str:
     except Exception:
         return f"Link: {url}"
 
-# 4. Multi-Category Authentic Food Photo Matcher
 def get_dish_photo(dish_name: str) -> str:
     d = dish_name.lower()
-    
-    # Desi / South Asian
     if any(k in d for k in ["karahi", "kadai", "handi"]):
         return "https://images.unsplash.com/photo-1603894584373-5ac82b2ae398?w=800"
-    if any(k in d for k in ["curry", "salan", "korma", "gravy", "masala", "tikka masala"]):
+    if any(k in d for k in ["curry", "salan", "korma", "gravy", "masala"]):
         return "https://images.unsplash.com/photo-1588166524941-3bf61a9c41db?w=800"
     if any(k in d for k in ["biryani", "pulao", "rice"]):
         return "https://images.unsplash.com/photo-1563379091339-03b21ab4a4f8?w=800"
-    if any(k in d for k in ["nihari", "haleem", "stew", "paya"]):
-        return "https://images.unsplash.com/photo-1547592166-23ac45744acd?w=800"
-    if any(k in d for k in ["daal", "dal", "lentil", "chana"]):
-        return "https://images.unsplash.com/photo-1546833999-b9f581a1996d?w=800"
-    if any(k in d for k in ["kebab", "kabab", "tikka", "bbq", "tandoori"]):
-        return "https://images.unsplash.com/photo-1555939594-58d7cb561ad1?w=800"
-
-    # Western / Italian
-    if any(k in d for k in ["pizza", "calzone"]):
-        return "https://images.unsplash.com/photo-1513104890138-7c749659a591?w=800"
-    if any(k in d for k in ["pasta", "fettuccine", "spaghetti", "penne", "lasagna", "alfredo"]):
-        return "https://images.unsplash.com/photo-1621996346565-e3d5d6281290?w=800"
-    if any(k in d for k in ["burger", "cheeseburger", "slider"]):
-        return "https://images.unsplash.com/photo-1568901346375-23c9450c58cd?w=800"
-    if any(k in d for k in ["steak", "beef", "ribs", "brisket"]):
-        return "https://images.unsplash.com/photo-1558030006-450675393462?w=800"
-
-    # Mexican
-    if any(k in d for k in ["taco", "burrito", "fajita", "quesadilla", "mexican"]):
+    if any(k in d for k in ["taco", "burrito", "mexican"]):
         return "https://images.unsplash.com/photo-1565299585323-38d6b0865b47?w=800"
-
-    # Asian
-    if any(k in d for k in ["ramen", "udon", "noodle", "soba"]):
+    if any(k in d for k in ["ramen", "noodle"]):
         return "https://images.unsplash.com/photo-1569718212165-3a8278d5f624?w=800"
-    if any(k in d for k in ["sushi", "sashimi"]):
-        return "https://images.unsplash.com/photo-1579871494447-9811cf80d66c?w=800"
-    if any(k in d for k in ["pad thai", "thai"]):
-        return "https://images.unsplash.com/photo-1559314809-0d155014e29e?w=800"
+    if any(k in d for k in ["pasta", "pizza"]):
+        return "https://images.unsplash.com/photo-1621996346565-e3d5d6281290?w=800"
+    return "https://images.unsplash.com/photo-1588166524941-3bf61a9c41db?w=800"
 
-    # Middle Eastern
-    if any(k in d for k in ["shawarma", "hummus", "falafel"]):
-        return "https://images.unsplash.com/photo-1561651823-34feb02250e4?w=800"
-
-    # Desserts
-    if any(k in d for k in ["cake", "cookie", "dessert", "brownie", "sweet", "chocolate"]):
-        return "https://images.unsplash.com/photo-1578985545062-69928b1d9587?w=800"
-
-    return "https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=800"
-
-# 5. Rate Limiting, CSRF, Magic Bytes
+# 5. Security: Rate Limiter, CSRF & Magic Bytes
 class SlidingWindowRateLimiter:
     def __init__(self, max_requests: int, window_seconds: int):
         self.max_requests = max_requests
@@ -234,10 +190,6 @@ def verify_csrf_token(token: Optional[str]) -> bool:
     except Exception:
         return False
 
-UPLOAD_DIR = "uploads"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
-
 MAX_FILE_SIZE = 10 * 1024 * 1024
 ALLOWED_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 ALLOWED_VIDEO_EXTS = {".mp4", ".mov", ".webm"}
@@ -258,6 +210,8 @@ def validate_magic_bytes(data: bytes, ext: str) -> bool:
     return False
 
 def generate_ai_with_fallback(contents, schema):
+    if not client:
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY environment variable is missing.")
     last_err = None
     for model_name in MODELS_TO_TRY:
         try:
@@ -276,6 +230,8 @@ def generate_ai_with_fallback(contents, schema):
     raise last_err
 
 def ask_ai_with_fallback(prompt):
+    if not client:
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY environment variable is missing.")
     last_err = None
     for model_name in MODELS_TO_TRY:
         try:
@@ -285,8 +241,9 @@ def ask_ai_with_fallback(prompt):
             continue
     raise last_err
 
+# 6. Database Setup in /tmp for Serverless
 def get_db():
-    conn = sqlite3.connect("ingredient_ai.db")
+    conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -321,6 +278,33 @@ def init_db():
     );
     """)
     conn.commit()
+
+    cursor.execute("SELECT COUNT(*) FROM posts")
+    if cursor.fetchone()[0] == 0:
+        cursor.execute("""
+            INSERT INTO posts (title, photo_url, source_url, cuisine, owner_token)
+            VALUES ('Lahori Chicken Curry', 'https://images.unsplash.com/photo-1588166524941-3bf61a9c41db?w=800', 'https://youtube.com', 'Pakistani', NULL)
+        """)
+        pid = cursor.lastrowid
+        ing = [
+            {"item": "Bone-in Chicken Pieces", "amount": 500, "unit": "g", "calories": 650},
+            {"item": "Onions (sliced)", "amount": 2, "unit": "whole", "calories": 80},
+            {"item": "Tomatoes (chopped)", "amount": 2, "unit": "whole", "calories": 45},
+            {"item": "Ginger-Garlic Paste", "amount": 1, "unit": "tbsp", "calories": 15},
+            {"item": "Desi Ghee or Oil", "amount": 2, "unit": "tbsp", "calories": 240},
+            {"item": "Desi Spices (Haldi, Lal Mirch, Garam Masala)", "amount": 1.5, "unit": "tbsp", "calories": 20}
+        ]
+        steps = [
+            "Fry sliced onions in oil until golden brown.",
+            "Add ginger-garlic paste and chicken; sauté until color changes.",
+            "Add chopped tomatoes and spices; bhunai until oil separates.",
+            "Pour in warm water, cover, and simmer for 15-20 minutes; garnish with ginger and green chilies."
+        ]
+        cursor.execute("""
+            INSERT INTO recipes (post_id, title, calories, min_calories, max_calories, protein_g, carbs_g, fat_g, ingredients, steps)
+            VALUES (?, 'Lahori Chicken Curry', 520, 480, 560, 42.0, 14.0, 32.0, ?, ?)
+        """, (pid, json.dumps(ing), json.dumps(steps)))
+        conn.commit()
     conn.close()
 
 init_db()
@@ -372,7 +356,6 @@ def get_feed():
     conn.close()
     return {"posts": feed}
 
-# 6. Analyze Dish (Extracts Image from URL or Dish Catalog)
 @app.post("/api/analyze")
 async def analyze_dish(
     request: Request,
@@ -389,7 +372,7 @@ async def analyze_dish(
 
     client_ip = request.client.host if request.client else "127.0.0.1"
     if not ai_rate_limiter.is_allowed(client_ip):
-        raise HTTPException(status_code=429, detail="Rate limit reached: Maximum 10 extractions per minute. Please wait.")
+        raise HTTPException(status_code=429, detail="Rate limit reached: Maximum 10 extractions per minute.")
 
     clean_url = reel_url.strip() if reel_url else None
     has_file = media_file and media_file.filename
@@ -404,16 +387,15 @@ async def analyze_dish(
     if has_file:
         raw_name = media_file.filename or ""
         ext = os.path.splitext(raw_name.lower())
-        
         if ext not in ALLOWED_IMAGE_EXTS and ext not in ALLOWED_VIDEO_EXTS:
-            raise HTTPException(status_code=400, detail="Disallowed file type. Only JPG, PNG, WEBP, and MP4 are permitted.")
+            raise HTTPException(status_code=400, detail="Disallowed file type.")
 
         file_bytes = await media_file.read()
         if len(file_bytes) > MAX_FILE_SIZE:
             raise HTTPException(status_code=413, detail="File exceeds 10MB limit.")
 
         if not validate_magic_bytes(file_bytes, ext):
-            raise HTTPException(status_code=400, detail="Invalid media file header detected.")
+            raise HTTPException(status_code=400, detail="Invalid media file header.")
 
         unique_name = f"{uuid.uuid4().hex}{ext}"
         saved_file_path = os.path.join(UPLOAD_DIR, unique_name)
@@ -430,7 +412,6 @@ async def analyze_dish(
         link_thumbnail = extract_thumbnail_from_link(clean_url)
 
     contents = []
-
     if saved_file_path and ext in ALLOWED_VIDEO_EXTS:
         try:
             gemini_file = client.files.upload(file=saved_file_path)
@@ -447,16 +428,14 @@ async def analyze_dish(
 
     prompt = f"""
     You are Ingredient AI, an expert visual culinary recognition system.
-    Look closely at the media or link and AUTOMATICALLY IDENTIFY the exact dish:
-    1. Determine the EXACT dish shown (actively recognize Pakistani / Desi, Italian, Mexican, and Asian dishes; never guess French duck breast unless clearly visible).
+    AUTOMATICALLY IDENTIFY the exact dish:
+    1. Exact dish title (recognize Desi/Pakistani, Italian, Mexican, Asian; never guess French duck breast unless visible).
     2. Regional Cuisine.
-    3. Realistic Calorie Range: min_calories and max_calories for a standard serving.
-    4. Total macro breakdown: protein (g), carbs (g), fat (g).
-    5. List all ingredients with realistic amounts (grams/tbsp/cups) and calories per ingredient.
-    6. 3-4 clear step-by-step cooking instructions.
-    
+    3. Calorie Range: min_calories and max_calories.
+    4. Total macros: protein_g, carbs_g, fat_g.
+    5. Ingredients with realistic amounts and calories.
+    6. 3-4 cooking steps.
     Link context: {clean_url or 'None'}
-    {link_context}
     """
     contents.append(prompt)
 
@@ -472,9 +451,6 @@ async def analyze_dish(
             except Exception:
                 pass
 
-    # Priority 1: User uploaded photo
-    # Priority 2: Real thumbnail extracted from link (YouTube / OpenGraph)
-    # Priority 3: Dynamic dish photo matching the recipe title
     if not saved_photo_url:
         saved_photo_url = link_thumbnail if link_thumbnail else get_dish_photo(recipe.title)
 
@@ -499,12 +475,12 @@ async def analyze_dish(
     conn.commit()
     conn.close()
 
-    return {"status": "success", "post_id": post_id, "title": recipe.title, "photo_url": saved_photo_url}
+    return {"status": "success", "post_id": post_id, "title": recipe.title}
 
 @app.delete("/api/posts/{post_id}")
 def delete_dish(post_id: int, x_csrf_token: Optional[str] = Header(None), x_owner_token: Optional[str] = Header(None)):
     if not verify_csrf_token(x_csrf_token):
-        raise HTTPException(status_code=403, detail="CSRF token invalid or missing.")
+        raise HTTPException(status_code=403, detail="CSRF token invalid.")
 
     conn = get_db()
     cursor = conn.cursor()
@@ -515,13 +491,9 @@ def delete_dish(post_id: int, x_csrf_token: Optional[str] = Header(None), x_owne
         raise HTTPException(status_code=404, detail="Recipe not found.")
 
     stored_owner = row["owner_token"]
-    if stored_owner is None:
-        conn.close()
-        raise HTTPException(status_code=403, detail="Curated showcase recipes cannot be deleted.")
-
     if not x_owner_token or x_owner_token != stored_owner:
         conn.close()
-        raise HTTPException(status_code=403, detail="Permission denied: You can only delete recipes you created.")
+        raise HTTPException(status_code=403, detail="Permission denied.")
 
     cursor.execute("DELETE FROM recipes WHERE post_id = ?", (post_id,))
     cursor.execute("DELETE FROM posts WHERE id = ?", (post_id,))
@@ -533,7 +505,7 @@ def delete_dish(post_id: int, x_csrf_token: Optional[str] = Header(None), x_owne
 def ask_ai(request: Request, post_id: int, req: QuestionRequest):
     client_ip = request.client.host if request.client else "127.0.0.1"
     if not ai_rate_limiter.is_allowed(client_ip):
-        raise HTTPException(status_code=429, detail="Rate limit reached. Please wait a moment.")
+        raise HTTPException(status_code=429, detail="Rate limit reached.")
 
     conn = get_db()
     cursor = conn.cursor()
@@ -643,7 +615,7 @@ def home():
                 <span style="font-size:24px;">🥗</span>
                 <span class="brand-badge">Ingredient AI</span>
             </div>
-            <div style="font-size:11px; color:#38bdf8; font-weight:700;">Dynamic Photos 📸</div>
+            <div style="font-size:11px; color:#10b981; font-weight:700;">Live Cloud ⚡</div>
         </header>
 
         <div class="upload-card">
@@ -814,7 +786,7 @@ def home():
             const maxCal = Math.round((post.max_calories || (post.calories * 1.1)) * scale);
 
             let msg = `🥗 *${title}* (${post.cuisine || 'Traditional'})\n`;
-            msg += `🔥 *Calories:* ${minCal}–${maxCal} kcal (Serves ${Math.round(2 * scale)})\n\n`;
+            msg += `🔥 *Calories:* ${minCal}–${maxCal} kcal\n\n`;
             msg += `🥕 *Ingredients Checklist:*\n`;
             (post.ingredients || []).forEach(i => {
                 const amt = Math.round(i.amount * scale * 10) / 10;
